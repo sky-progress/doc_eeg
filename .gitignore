@@ -1,0 +1,44 @@
+# Python 缓存与本地环境
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+
+# 编辑器及系统文件
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# 数据、运行结果和权重应位于 /data/gyx
+/data/
+/runs/
+/processed/
+/manifests/
+/splits/
+/preprocessing/runs/
+/preprocessing/processed/
+/preprocessing/manifests/
+checkpoints/
+*.edf
+*.EDF
+*.edf copy
+*.eeg
+*.erd
+*.avi
+*.fif
+*.fif.gz
+*.npy
+*.npz
+*.h5
+*.hdf5
+*.pt
+*.pth
+*.ckpt
+*.log
