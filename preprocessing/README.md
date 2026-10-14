@@ -1,68 +1,142 @@
 # 公共预处理
 
-脚本按两位编号表示执行顺序，内部模块不编号。所有操作在服务器 evobrain_mamba 环境执行，执行前确认。
+所有运行在服务器evobrain_mamba环境执行。默认只列计划，真实处理须明确授权。
 
-## 产物位置
-根目录：`/data/gyx/doc_eeg_analysis/preprocessing`。
-- `tables/`：主表、健康组编号登记、文件检查和逐通道明细。
-- `reports/`：可阅读的正式报告，包含结论、方法、证据、限制与后续建议；仅提供 Markdown；文件名和正文记录北京时间。
-- `logs/`：每次操作的日志、配置、逐文件诊断和来源追溯信息。
-- `reference/`：原始参考评分表。
+## 文件职责
 
-目前不建立 figures/，修复与处理开始时再建 repaired/、processed/。修复数据不设 v1/。
+| 文件 | 内容 |
+| --- | --- |
+| config.py | 检测、滤波和可用时长参数；中文说明及单位 |
+| 01_build_patient_master.py | 评分读取、GUID匹配、主表导出 |
+| 02_repair_edf_to_fif.py | 格式检查、临时修复、19导FIF转换及验收 |
+| 03_check_signal_quality.py | 初检及共用检测函数，坏导整份排除 |
+| 04_preprocess_eeg.py | 滤波、滤波后质控、平均参考、最终坏段补标及保存 |
+| 05_make_windows.py | 根据最终坏段均匀选择窗口，回读核验 |
+| reporting.py | 共用Markdown报告格式 |
 
-## 01 建立主表
-当前主表为 `tables/01_受试者主表_20261010_170859.xlsx`，包含患者组111条测试记录和健康组17条记录，共128条。患者原入组状态保持不变；健康组未提供的临床字段留空。
+共用检测函数放在03，04及05通过importlib加载，不复制两套实现。
+历史实验辅助入口18、21等保留原编号；历史产物不改名。
+
+## 当前数据
+
+代码：`/home/guoyanxin/project/doc_eeg_analysis`。
+数据：`/data/gyx/doc_eeg_analysis/preprocessing`。
+主表：`tables/63_主表_20261013_165853.csv`，165条，14列（患者ID用于分组，诊断用于后续任务标签）。
+转换清单：`tables/03_FIF转换清单_20261013_190410.csv`，165条均完成。
+FIF：`raw_fif/`；原EDF只读，修复EDF不永久保存。
+表格、报告、日志分别放`tables/`、`reports/`、`logs/`，报告仅Markdown。
+
+排除308-WFL、313-GSR、359-YSH、462-MWS；保留467-YSH总分15。
+303使用e2ee5b31，470使用e4d4b1e4；463-WFL对应cfd46c86、总分4，
+464-WFL对应22a33540、总分2。完整GUID和EDF位置以主表为准。
+148条患者记录与17条HC不是已确认的独立受试者数量。
+
+## 参数与检测规则
+
+QCConfig保存前后阶段检测阈值；SignalConfig增加滤波参数。
+修改config.py影响下一次运行，已完成结果不会自动变化。
+每次检测及处理保存parameters快照和输入、源码指纹。
+
+初检检查平直、非有限值、持续异常通道及已有坏段。
+含间断或已有BAD的窗口不参与通道统计，数字饱和仅在量程标定明确时可查。
+滤波不跨坏段或间断，保留滤波边缘保护区。
+滤波后任一坏导排除整份；不做ICA、插值、修复坏导或重采样。
+平均参考后先复查持续坏导，再按原规则追加异常窗口及保护范围为BAD。
+任一阶段发现坏导均排除整份记录；最后检查全部可用窗口。
+最终不可用比例超过90%排除，超过50%保留警告。
+
+## 执行入口
 
 ```bash
 conda activate evobrain_mamba
 cd /home/guoyanxin/project/doc_eeg_analysis
-python preprocessing/01_build_patient_master.py \
-  --patient-master /data/gyx/doc_eeg_analysis/preprocessing/tables/01_患者主表_20261010_144336.xlsx \
-  --healthy /data/北湖脑电 \
-  --healthy-registry /data/gyx/doc_eeg_analysis/preprocessing/tables/01_健康组编号_20261010_150752.csv \
-  --output /data/gyx/doc_eeg_analysis/preprocessing/tables \
-  --reports /data/gyx/doc_eeg_analysis/preprocessing/reports \
-  --logs /data/gyx/doc_eeg_analysis/preprocessing/logs
+
+# 只核对当前输入计划，不读取波形。
+python preprocessing/03_check_signal_quality.py
+
+# 下列为真实执行命令，运行前须获得授权。
+python preprocessing/03_check_signal_quality.py --execute
+
+python preprocessing/04_preprocess_eeg.py \
+  --qc-table /data/gyx/doc_eeg_analysis/preprocessing/tables/03_信号质量检测_时间.csv \
+  --output-dir /data/gyx/doc_eeg_analysis/preprocessing/processed/新批次 \
+  --execute
+
+python preprocessing/05_make_windows.py \
+  --table /data/gyx/doc_eeg_analysis/preprocessing/tables/04_预处理明细_时间.csv \
+  --processed-dir /data/gyx/doc_eeg_analysis/preprocessing/processed/新批次 \
+  --window-seconds 10 --max-windows 60 --execute
 ```
 
-从原始评分表重新构建患者表时改用 `--reference` 和 `--raw`；该模式重新核验同GUID副本。后续健康组重建沿用已有登记表，保持编号稳定。
+04/05必须显式指定本次输入清单，避免自动读到旧批次。
+已存在处理FIF或相同切窗目录拒绝覆盖。
+05必须指定`--processed-dir`；默认切窗目录为
+`epochs/<预处理批次>/<窗口参数>/`，也可显式指定`--output-dir`。
+新的04已包含原06最终补标，不需要另行改写FIF。
+切窗不再次滤波、参考或标准化，不跨BAD/EDGE；不足数量不补齐。
+主表已提供患者ID；05将其写入切窗清单的subject_id。
+分组使用患者ID，记录编号和GUID用于追溯单次测试。
 
-## 02 检查 EDF
-只读检查固定头、通道表、数据区长度及MNE直接读取结果，不修复、不转换。
+## 验证
+
+`tests/test_preprocessing_pipeline.py`覆盖原阈值迁移、参数生效、间断避让、
+参考后补标不改波形、初检到预处理及切窗的合成FIF回读。
+原主表和EDF转换测试继续保留。历史研究操作见`docs/preprocessing.md`。
+
+## 本批次续跑与复查
+
+当前连续FIF保存在`processed/20261014_v1`。04新增`--resume-table`，
+只在参数、主表、初检清单、GUID及源路径一致时复用已完成结果。
+全量执行04/05时输入清单必须覆盖完整主表；小样本调试需显式指定`--codes`。
+
+续跑会核验已保存FIF的分卷、通道、采样率、时间轴、频带、坏段及平均参考，
+再检查全部可用窗口与参考后坏导。核验通过的FIF不重复滤波、不改写波形；
+参考后发现坏导的记录标为排除，已有FIF保留，05不会导出该记录的窗口。
+复查若发现可用窗口仍异常，标记失败并停止将其纳入切窗，不静默复用。
+原滤波源码指纹保存在`processing_code_sha256`，本次复查源码指纹
+保存在`code_sha256`，续跑来源与清单SHA256分别记录。
 
 ```bash
-python preprocessing/02_inspect_edf.py \
-  --master /data/gyx/doc_eeg_analysis/preprocessing/tables/01_受试者主表_20261010_150752.xlsx \
-  --tables /data/gyx/doc_eeg_analysis/preprocessing/tables \
-  --reports /data/gyx/doc_eeg_analysis/preprocessing/reports \
-  --logs /data/gyx/doc_eeg_analysis/preprocessing/logs
+python preprocessing/04_preprocess_eeg.py \
+  --qc-table /data/gyx/doc_eeg_analysis/preprocessing/tables/03_信号质量检测_20261013_210842.csv \
+  --resume-table /data/gyx/doc_eeg_analysis/preprocessing/tables/04_预处理明细_20261014_131554.csv \
+  --output-dir /data/gyx/doc_eeg_analysis/preprocessing/processed/20261014_v1 \
+  --execute
 ```
 
-正式检查报告：`reports/02_EDF格式检查报告_20261010_155547.md`。文件检查和通道明细均在 tables/。历史152829检查曾误判负增益，表格以“历史”标记，后续使用153102结果。
+## 患者ID与重复测试（2026-10-14）
 
-历史快照保留操作发生时的原路径与哈希；迁移映射见 `logs/artifact_relocations_20261010.json`。旧预览仅保留为历史产物，不新建图目录。原始EDF和表格临床内容未变。
+当前主表165条测试记录，对应152个患者ID；12组有多次测试。
+患者ID使用稳定记录锚点，例如306-LCS和447-LCS均为`doc_306`，
+钟慧仁三份记录399/472/473均为`doc_399`。关联关系集中在01的
+`DEFAULT_PATIENT_LINKS`，未来明确的新关联可用`--patient-link 编号=锚点编号`。
+既有ID可通过`--previous-master`复用，不随主表排序、增删记录而重新编号。
+姓名或缩写只是核对线索，不自动作为身份分组依据。
 
-## 03 修复 EDF 并转 FIF
-`03_repair_edf_to_fif.py` 最小修复头部与被覆盖的F4/C3标签，数据区逐字节保留；EEG使用用户确认的standard_1020模板，辅助通道按眼电、心电、肌电或misc分类。
+424-WLI和HC_011_WAN经用户确认是王立康复前后的记录，均为`doc_424`。
+HC_011_WAN属于康复后记录；文件位于HC目录不代表其是无患病史的健康对照。
+后续任务必须明确是否纳入该记录及其标签，不能从患者ID前缀自动生成标签。
+同一患者全部测试及窗口必须留在同一划分，包含内层和外层交叉验证。
+不同阶段标签不同的记录不能未经任务约定直接平均为一个患者标签。
 
-```bash
-python preprocessing/03_repair_edf_to_fif.py \
-  --master /data/gyx/doc_eeg_analysis/preprocessing/tables/01_受试者主表_20261010_150752.xlsx \
-  --inspection /data/gyx/doc_eeg_analysis/preprocessing/logs/02_inspect_20261010_153102/details.jsonl \
-  --base /data/gyx/doc_eeg_analysis/preprocessing
-```
+本次只更新主表身份字段，不改评分、GUID、EDF路径或FIF波形，不重跑03/04。
+03/04明细中记录的主表SHA256仍保留执行时的真实值；原12列主表已归档，
+不把历史输入指纹替换成新增字段后的指纹。05将读取更新后的13列主表。
+本次身份核验报告：`reports/01_主表更新_20261014_171253.md`。
 
-先用 `--pilot` 验证代表文件。已验证输出通过同一份 `tables/03_修复对应表.csv` 续接，不覆盖。修复EDF保存到 `repaired/edf/`，FIF到 `repaired/fif/`；日志在logs，仅生成一份Markdown报告。
+## 诊断标签维护（2026-10-14）
 
-连续记录转FIF，真实采集间断记录保留EDF+D，FIF处理方案需要用户确认。FIF波形和事件时间遵循MNE格式的float32舍入；中文事件以MNE字符实体编码保存，显示时用html.unescape恢复文字，原始精确事件数据保留在EDF。大文件可能按FIF大小限制分片，所有分片均为同一记录，必须一起保留。
+主表新增“诊断”，位于“总分”之后；一行仍对应一次测试。
+首次按编号从评分表读取，核对姓名、评分及GUID，不依据总分推算诊断。
+MCS+、MCS-、eMCS及边界诊断保留；具体二分类映射由建模任务定义。
+470-MZH仅去掉误粘的科室和GUID，保留“昏迷-UWS边界”。
 
-不滤波、不重参考、不分段处理信号；10–20坐标为标准模板，不是个体实测电极位置。
+后续可直接修改当前主表的诊断列。01重建时通过`--previous-master`
+保留同一测试已有诊断，包括主动留空；不被旧Excel标签覆盖。
+新增记录才使用来源诊断；姓名或GUID变化时拒绝自动复用标签。
+默认旧主表仍为`tables/63_主表_20261013_165853.csv`，路径不变。
+若后续改用新的主表文件，重建时应显式传入该文件。
 
-### 主表修订
-用户确认338-SXY、352-ZYL、356-GSX可用，已恢复纳入。旧119条记录保持不变，评分表暂缓/排除剩23条。当前EDF修复任务仍基于先前119条批次；新增3条尚未补跑检查和转换。
-
-用户进一步确认301-FBI、303-MWS、307-LJB、308-WFL、314-HAD、344-ZGZ的指定GUID，已恢复纳入。309-ZCH仍待确认GUID。主表原122条保持不变，评分表暂缓/排除剩17条。后续恢复指定记录可使用 `--restore-codes` 与 `--guid-overrides 编号=GUID`，不自动选择其他同名记录。
-
-### 当前修复状态
-当前主表128条均已保存修复EDF。114条已转FIF，14条存在真实采集间断，仅保存EDF+D，FIF方案待确认。新增9条均验证通过。修复对应表为 `tables/03_修复对应表.csv`，最新正式报告为 `reports/03_EDF修复与FIF转换报告_20261010_171420.md`。补跑指定记录可使用02/03脚本的 `--codes`，03使用该批次02生成的 `details.jsonl`。
+HC_011_WAN照录来源HC标签，但其为已确认的康复后记录。
+DoC/HC纳排需单独确认，不能只按该标签将其作为普通健康对照。
+修改诊断不需要重做FIF或切窗；后续实验应固定执行时的标签版本。
